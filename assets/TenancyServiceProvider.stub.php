@@ -53,6 +53,7 @@ class TenancyServiceProvider extends ServiceProvider
             Events\DeletingTenant::class => [
                 JobPipeline::make([
                     Jobs\DeleteDomains::class,
+                    // Jobs\RemoveStorageSymlinks::class,
                 ])->send(function (Events\DeletingTenant $event) {
                     return $event->tenant;
                 })->shouldBeQueued(false),
@@ -62,7 +63,6 @@ class TenancyServiceProvider extends ServiceProvider
             Events\TenantDeleted::class => [
                 JobPipeline::make([
                     Jobs\DeleteDatabase::class,
-                    // Jobs\RemoveStorageSymlinks::class,
                 ])->send(function (Events\TenantDeleted $event) {
                     return $event->tenant;
                 })->shouldBeQueued(false), // `false` by default, but you probably want to make this `true` for production.
@@ -147,16 +147,19 @@ class TenancyServiceProvider extends ServiceProvider
     {
         // \Stancl\Tenancy\Bootstrappers\RootUrlBootstrapper::$rootUrlOverride = function (Tenant $tenant, string $originalRootUrl) {
         //     $tenantDomain = $tenant instanceof \Stancl\Tenancy\Contracts\SingleDomainTenant
-        //     ? $tenant->domain
-        //     : $tenant->domains->first()->domain;
+        //         ? $tenant->domain
+        //         : $tenant->domains->first()->domain;
+        //
         //     $scheme = str($originalRootUrl)->before('://');
         //
-        //     // If you're using domain identification:
-        //     return $scheme . '://' . $tenantDomain . '/';
-        //
-        //     // If you're using subdomain identification:
-        //     $originalDomain = str($originalRootUrl)->after($scheme . '://');
-        //     return $scheme . '://' . $tenantDomain . '.' . $originalDomain . '/';
+        //     if (str_contains($tenantDomain, '.')) {
+        //         // Domain identification
+        //         return $scheme . '://' . $tenantDomain . '/';
+        //     } else {
+        //         // Subdomain identification
+        //         $originalDomain = str($originalRootUrl)->after($scheme . '://')->before('/');
+        //         return $scheme . '://' . $tenantDomain . '.' . $originalDomain . '/';
+        //     }
         // };
     }
 
@@ -182,7 +185,7 @@ class TenancyServiceProvider extends ServiceProvider
 
         // // To make Livewire v3 work with Tenancy, make the update route universal.
         // Livewire::setUpdateRoute(function ($handle) {
-        //     return RouteFacade::post('/livewire/update', $handle)->middleware(['web', 'universal', \Stancl\Tenancy::defaultMiddleware()]);
+        //     return RouteFacade::post('/livewire/update', $handle)->middleware(['web', 'universal', \Stancl\Tenancy\Tenancy::defaultMiddleware()]);
         // });
     }
 
