@@ -43,7 +43,16 @@ use Stancl\Tenancy\ResourceSyncing\Events\CentralResourceDetachedFromTenant;
 use Stancl\Tenancy\Tests\Etc\ResourceSyncing\CentralUser as BaseCentralUser;
 use Stancl\Tenancy\ResourceSyncing\CentralResourceNotAvailableInPivotException;
 use Stancl\Tenancy\ResourceSyncing\Events\SyncedResourceSavedInForeignDatabase;
+use Illuminate\Database\Eloquent\Scope;
+use Illuminate\Database\QueryException;
 use function Stancl\Tenancy\Tests\pest;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\Schema\Blueprint;
+use Stancl\Tenancy\Events\TenantDeleted;
+use Stancl\Tenancy\ResourceSyncing\Events\SyncedResourceDeleted;
+use Stancl\Tenancy\ResourceSyncing\Listeners\DeleteAllTenantMappings;
+use Stancl\Tenancy\ResourceSyncing\Listeners\DeleteResourceMapping;
+use Illuminate\Database\Eloquent\Relations\Relation;
 
 beforeEach(function () {
     config(['tenancy.bootstrappers' => [
@@ -67,6 +76,10 @@ beforeEach(function () {
     CreateTenantResource::$shouldQueue = false;
     DeleteResourceInTenant::$shouldQueue = false;
     UpdateOrCreateSyncedResource::$scopeGetModelQuery = null;
+    DeleteAllTenantMappings::$pivotTables = ['tenant_resources' => 'tenant_id'];
+
+    // Reset global scopes on models (should happen automatically but to make this more explicit)
+    Model::clearBootedModels();
 
     $syncedAttributes = [
         'global_id',
@@ -87,6 +100,7 @@ beforeEach(function () {
     CentralUser::$creationAttributes = $creationAttributes;
 
     Event::listen(SyncedResourceSaved::class, UpdateOrCreateSyncedResource::class);
+    Event::listen(SyncedResourceDeleted::class, DeleteResourceMapping::class);
     Event::listen(SyncMasterDeleted::class, DeleteResourcesInTenants::class);
     Event::listen(SyncMasterRestored::class, RestoreResourcesInTenants::class);
     Event::listen(CentralResourceAttachedToTenant::class, CreateTenantResource::class);
@@ -106,6 +120,30 @@ beforeEach(function () {
 
 afterEach(function () {
     UpdateOrCreateSyncedResource::$scopeGetModelQuery = null;
+
+    // Reset global scopes on models (should happen automatically but to make this more explicit)
+    Model::clearBootedModels();
+});
+
+test('resources created with the same global id in different tenant dbs will be synced to a single central resource', function () {
+    $tenants = [Tenant::create(), Tenant::create(), Tenant::create()];
+    migrateUsersTableForTenants();
+
+    // Only a single central user is created since the same global_id is used for each tenant user
+    // Therefore all of these tenant users are synced to a single global user
+    tenancy()->runForMultiple($tenants, function () {
+        // Create a user with the same global_id in each tenant DB
+        TenantUser::create([
+            'global_id' => 'acme',
+            'name' => Str::random(),
+            'email' => 'john@localhost',
+            'password' => 'secret',
+            'role' => 'commenter',
+        ]);
+    });
+
+    expect(CentralUser::all())->toHaveCount(1);
+    expect(CentralUser::first()->global_id)->toBe('acme');
 });
 
 test('SyncedResourceSaved event gets triggered when resource gets created or when its synced attributes get updated', function () {
@@ -226,7 +264,7 @@ test('attaching central resources to tenants or vice versa creates synced tenant
         expect(TenantUser::all())->toHaveCount(0);
     });
 
-    // Attaching resources to tenants requires using a pivot that implements the PivotWithRelation interface
+    // Attaching resources to tenants requires using a pivot that implements the PivotWithCentralResource interface
     $tenant->customPivotUsers()->attach($createCentralUser());
     $createCentralUser()->tenants()->attach($tenant);
 
@@ -250,7 +288,7 @@ test('detaching central users from tenants or vice versa force deletes the synce
     migrateUsersTableForTenants();
 
     if ($attachUserToTenant) {
-        // Attaching resources to tenants requires using a pivot that implements the PivotWithRelation interface
+        // Attaching resources to tenants requires using a pivot that implements the PivotWithCentralResource interface
         $tenant->customPivotUsers()->attach($centralUser);
     } else {
         $centralUser->tenants()->attach($tenant);
@@ -261,7 +299,7 @@ test('detaching central users from tenants or vice versa force deletes the synce
     });
 
     if ($attachUserToTenant) {
-        // Detaching resources from tenants requires using a pivot that implements the PivotWithRelation interface
+        // Detaching resources from tenants requires using a pivot that implements the PivotWithCentralResource interface
         $tenant->customPivotUsers()->detach($centralUser);
     } else {
         $centralUser->tenants()->detach($tenant);
@@ -296,7 +334,7 @@ test('detaching central users from tenants or vice versa force deletes the synce
     });
 
     if ($attachUserToTenant) {
-        // Detaching resources from tenants requires using a pivot that implements the PivotWithRelation interface
+        // Detaching resources from tenants requires using a pivot that implements the PivotWithCentralResource interface
         $tenant->customPivotUsers()->detach($centralUserWithSoftDeletes);
     } else {
         $centralUserWithSoftDeletes->tenants()->detach($tenant);
@@ -861,7 +899,54 @@ test('deleting SyncMaster automatically deletes its Syncables', function (bool $
     'basic pivot' => false,
 ]);
 
-test('tenant pivot records are deleted along with the tenants to which they belong to', function() {
+test('tenant pivot records are deleted along with the tenants to which they belong', function (bool $dbLevelOnCascadeDelete, bool $morphPivot) {
+    [$tenant] = createTenantsAndRunMigrations();
+
+    if ($morphPivot) {
+        config(['tenancy.models.tenant' => MorphTenant::class]);
+        $centralUserModel = BaseCentralUser::class;
+
+        // The default pivot table, no need to configure the listener
+        $pivotTable = 'tenant_resources';
+    } else {
+        $centralUserModel = CentralUser::class;
+
+        // Custom pivot table
+        $pivotTable = 'tenant_users';
+    }
+
+    if ($dbLevelOnCascadeDelete) {
+        addTenantIdConstraintToPivot($pivotTable);
+    } else {
+        // Event-based cleanup
+        Event::listen(TenantDeleted::class, DeleteAllTenantMappings::class);
+
+        DeleteAllTenantMappings::$pivotTables = [$pivotTable => 'tenant_id'];
+    }
+
+    $syncMaster = $centralUserModel::create([
+        'global_id' => 'user',
+        'name' => 'Central user',
+        'email' => 'central@localhost',
+        'password' => 'password',
+        'role' => 'user',
+    ]);
+
+    $syncMaster->tenants()->attach($tenant);
+
+    // Pivot records should be deleted along with the tenant
+    $tenant->delete();
+
+    expect(DB::select("SELECT * FROM {$pivotTable} WHERE tenant_id = ?", [$tenant->getTenantKey()]))->toHaveCount(0);
+})->with([
+    'db level on cascade delete' => true,
+    'event-based on cascade delete' => false,
+])->with([
+    'polymorphic pivot' => true,
+    'basic pivot' => false,
+]);
+
+test('pivot record is automatically deleted with the tenant resource', function() {
     [$tenant] = createTenantsAndRunMigrations();
 
     $syncMaster = CentralUser::create([
@@ -874,10 +959,54 @@ test('tenant pivot records are deleted along with the tenants to which they belo
 
     $syncMaster->tenants()->attach($tenant);
 
-    $tenant->delete();
+    expect(DB::select("SELECT * FROM tenant_users WHERE tenant_id = ?", [$tenant->id]))->toHaveCount(1);
 
-    // Deleting tenant deletes its pivot records
-    expect(DB::select("SELECT * FROM tenant_users WHERE tenant_id = ?", [$tenant->getTenantKey()]))->toHaveCount(0);
+    $tenant->run(function () {
+        TenantUser::firstWhere('global_id', 'cascade_user')->delete();
+    });
+
+    // Deleting tenant resource deletes its pivot record
+    expect(DB::select("SELECT * FROM tenant_users WHERE tenant_id = ?", [$tenant->id]))->toHaveCount(0);
+
+    // The same works with forceDelete
+    addExtraColumns(true);
+
+    $syncMaster = CentralUserWithSoftDeletes::create([
+        'global_id' => 'force_cascade_user',
+        'name' => 'Central user',
+        'email' => 'central2@localhost',
+        'password' => 'password',
+        'role' => 'force_cascade_user',
+        'foo' => 'bar',
+    ]);
+
+    $syncMaster->tenants()->attach($tenant);
+
+    expect(DB::select("SELECT * FROM tenant_users WHERE tenant_id = ?", [$tenant->id]))->toHaveCount(1);
+
+    $tenant->run(function () {
+        TenantUserWithSoftDeletes::firstWhere('global_id', 'force_cascade_user')->forceDelete();
+    });
+
+    expect(DB::select("SELECT * FROM tenant_users WHERE tenant_id = ?", [$tenant->id]))->toHaveCount(0);
+});
+
+test('DeleteAllTenantMappings handles incorrect configuration correctly', function() {
+    Event::listen(TenantDeleted::class, DeleteAllTenantMappings::class);
+
+    [$tenant1, $tenant2] = createTenantsAndRunMigrations();
+
+    // Existing table, non-existent tenant key column
+    // The listener should throw an 'unknown column' exception
+    DeleteAllTenantMappings::$pivotTables = ['tenant_users' => 'non_existent_column'];
+
+    // Should throw an exception when tenant is deleted
+    expect(fn() => $tenant1->delete())->toThrow(QueryException::class, "Unknown column 'non_existent_column' in 'where clause'");
+
+    // Non-existent table
+    DeleteAllTenantMappings::$pivotTables = ['nonexistent_pivot' => 'non_existent_column'];
+
+    expect(fn() => $tenant2->delete())->toThrow(QueryException::class, "Table 'main.nonexistent_pivot' doesn't exist");
 });
 
 test('trashed resources are synced correctly', function () {
@@ -1173,6 +1302,123 @@ test('resource creation works correctly when central resource provides defaults 
     expect($centralUser->foo)->toBe('bar');
 });
 
+test('global scopes on syncable models can break resource syncing', function () {
+    [$tenant1, $tenant2] = createTenantsAndRunMigrations();
+
+    $centralUser = CentralUser::create([
+        'global_id' => 'foo',
+        'name' => 'foo',
+        'email' => 'foo@bar.com',
+        'password' => '*****',
+        'role' => 'admin', // not 'visible'
+    ]);
+
+    // Create a tenant resource. The global id matches that of the central user created above,
+    // so the synced columns of the central record will be updated.
+    $tenant1->run(fn () => TenantUser::create([
+        'global_id' => 'foo',
+        'name' => 'tenant1 user',
+        'email' => 'tenant1@user.com',
+        'password' => 'tenant1_password',
+        'role' => 'user1',
+    ]));
+
+    expect($centralUser->refresh()->name)->toBe('tenant1 user');
+
+    // While syncing a tenant resource with the same global id,
+    // the central resource will not be found due to this scope,
+    // leading to the syncing logic trying to create a new central resource with that same global id,
+    // triggering a unique constraint violation exception.
+    CentralUser::addGlobalScope(new VisibleScope());
+
+    expect(function () use ($tenant1) {
+         $tenant1->run(fn () => TenantUser::create([
+            'global_id' => 'foo',
+            'name' => 'tenant1new user',
+            'email' => 'tenant1new@user.com',
+            'password' => 'tenant1new_password',
+            'role' => 'user1new',
+        ]));
+    })->toThrow(QueryException::class, "Duplicate entry 'foo' for key 'users.users_global_id_unique'");
+
+    // The central resource stays the same
+    expect($centralUser->refresh()->name)->toBe('tenant1 user');
+
+    // Use UpdateOrCreateSyncedResource::$scopeGetModelQuery to bypass the global scope.
+    UpdateOrCreateSyncedResource::$scopeGetModelQuery = function (Builder $query) {
+        $query->withoutGlobalScope(VisibleScope::class);
+    };
+
+    // Now, the central resource IS found, and no exception is thrown
+    $tenant2->run(fn () => TenantUser::create([
+        'global_id' => 'foo',
+        'name' => 'tenant2 user',
+        'email' => 'tenant2@user.com',
+        'password' => 'tenant2_password',
+        'role' => 'user2',
+    ]));
+
+    // The central resource was updated
+    expect($centralUser->refresh()->name)->toBe('tenant2 user');
+
+    // The change was also synced to tenant1
+    expect($tenant1->run(fn () => TenantUser::first()->name))->toBe('tenant2 user');
+});
+
+test('attach and detach events are handled correctly when using morph maps', function() {
+    config(['tenancy.models.tenant' => MorphTenant::class]);
+    [$tenant] = createTenantsAndRunMigrations();
+    migrateCompaniesTableForTenants();
+
+    Relation::morphMap([
+        'users' => BaseCentralUser::class,
+        'companies' => CentralCompany::class,
+    ]);
+
+    $centralUser = BaseCentralUser::create([
+        'global_id' => 'user',
+        'name' => 'Central user',
+        'email' => 'central@localhost',
+        'password' => 'password',
+        'role' => 'user',
+    ]);
+
+    $centralCompany = CentralCompany::create([
+        'global_id' => 'company',
+        'name' => 'Central company',
+        'email' => 'company@localhost',
+    ]);
+
+    $tenant->users()->attach($centralUser);
+    $tenant->companies()->attach($centralCompany);
+
+    // Assert all tenant_resources mappings actually use the configured morph map
+    expect(DB::table('tenant_resources')->count())
+        ->toBe(DB::table('tenant_resources')->whereIn('tenant_resources_type', ['users', 'companies'])->count());
+
+    tenancy()->initialize($tenant);
+
+    expect(BaseTenantUser::whereGlobalId('user')->first())->not()->toBeNull();
+    expect(TenantCompany::whereGlobalId('company')->first())->not()->toBeNull();
+
+    tenancy()->end();
+
+    $tenant->users()->detach($centralUser);
+    $tenant->companies()->detach($centralCompany);
+
+    tenancy()->initialize($tenant);
+
+    expect(BaseTenantUser::whereGlobalId('user')->first())->toBeNull();
+    expect(TenantCompany::whereGlobalId('company')->first())->toBeNull();
+});
+
+function addTenantIdConstraintToPivot(string $pivotTable): void
+{
+    Schema::table($pivotTable, function (Blueprint $table) {
+        $table->foreign('tenant_id')->references('id')->on('tenants')->onDelete('cascade');
+    });
+}
+
 /**
  * Create two tenants and run migrations for those tenants.
  *
@@ -1241,6 +1487,14 @@ class TenantUser extends BaseTenantUser
     {
         return $this->belongsToMany(Tenant::class, 'tenant_users', 'global_user_id', 'tenant_id', 'global_id')
             ->using(TenantPivot::class);
+    }
+}
+
+class VisibleScope implements Scope
+{
+    public function apply(Builder $builder, Model $model): void
+    {
+        $builder->where('role', 'visible');
     }
 }
 
@@ -1321,6 +1575,7 @@ class CentralCompany extends Model implements SyncMaster
         ];
     }
 }
+
 class TenantCompany extends Model implements Syncable
 {
     use ResourceSyncing;

@@ -9,7 +9,7 @@ use Ramsey\Uuid\Uuid;
 use Stancl\Tenancy\Contracts\UniqueIdentifierGenerator;
 
 /**
- * Generates a UUID for the tenant key.
+ * Generates a UUIDv4 for the tenant key.
  */
 class UUIDGenerator implements UniqueIdentifierGenerator
 {

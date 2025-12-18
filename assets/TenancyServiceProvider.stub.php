@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
-use Illuminate\Routing\Route;
 use Stancl\Tenancy\Jobs;
 use Stancl\Tenancy\Events;
 use Stancl\Tenancy\ResourceSyncing;
@@ -14,13 +13,24 @@ use Stancl\JobPipeline\JobPipeline;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Stancl\Tenancy\Actions\CloneRoutesAsTenant;
-use Stancl\Tenancy\Overrides\TenancyUrlGenerator;
 use Illuminate\Contracts\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\Route as RouteFacade;
-use Stancl\Tenancy\Middleware\InitializeTenancyByPath;
-use Stancl\Tenancy\Middleware\InitializeTenancyByRequestData;
-use Stancl\Tenancy\Bootstrappers\Integrations\FortifyRouteBootstrapper;
+use Illuminate\Support\Facades\Route;
 
+/**
+ * Tenancy for Laravel.
+ *
+ * Documentation: https://tenancyforlaravel.com
+ *
+ * We can sustainably develop Tenancy for Laravel thanks to our sponsors.
+ * Big thanks to everyone listed here: https://github.com/sponsors/stancl
+ *
+ * You can also support us, and save time, by purchasing these products:
+ *   Exclusive content for sponsors: https://sponsors.tenancyforlaravel.com
+ *   Multi-Tenant SaaS boilerplate: https://portal.archte.ch/boilerplate
+ *   Multi-Tenant Laravel in Production e-book: https://portal.archte.ch/book
+ *
+ * All of these products can also be accessed at https://portal.archte.ch
+ */
 class TenancyServiceProvider extends ServiceProvider
 {
     // By default, no namespace is used to support the callable array syntax.
@@ -42,7 +52,7 @@ class TenancyServiceProvider extends ServiceProvider
                     // Provision API keys, create S3 buckets, anything you want!
                 ])->send(function (Events\TenantCreated $event) {
                     return $event->tenant;
-                })->shouldBeQueued(false), // `false` by default, but you likely want to make this `true` in production.
+                })->shouldBeQueued(false),
 
                 // Listeners\CreateTenantStorage::class,
             ],
@@ -65,7 +75,9 @@ class TenancyServiceProvider extends ServiceProvider
                     Jobs\DeleteDatabase::class,
                 ])->send(function (Events\TenantDeleted $event) {
                     return $event->tenant;
-                })->shouldBeQueued(false), // `false` by default, but you probably want to make this `true` for production.
+                })->shouldBeQueued(false),
+
+                // ResourceSyncing\Listeners\DeleteAllTenantMappings::class,
             ],
 
             Events\TenantMaintenanceModeEnabled::class => [],
@@ -114,6 +126,9 @@ class TenancyServiceProvider extends ServiceProvider
             ResourceSyncing\Events\SyncedResourceSaved::class => [
                 ResourceSyncing\Listeners\UpdateOrCreateSyncedResource::class,
             ],
+            ResourceSyncing\Events\SyncedResourceDeleted::class => [
+                ResourceSyncing\Listeners\DeleteResourceMapping::class,
+            ],
             ResourceSyncing\Events\SyncMasterDeleted::class => [
                 ResourceSyncing\Listeners\DeleteResourcesInTenants::class,
             ],
@@ -126,7 +141,9 @@ class TenancyServiceProvider extends ServiceProvider
             ResourceSyncing\Events\CentralResourceDetachedFromTenant::class => [
                 ResourceSyncing\Listeners\DeleteResourceInTenant::class,
             ],
-            // Fired only when a synced resource is changed in a different DB than the origin DB (to avoid infinite loops)
+
+            // Fired only when a synced resource is changed (as a result of syncing)
+            // in a different DB than DB from which the change originates (to avoid infinite loops)
             ResourceSyncing\Events\SyncedResourceSavedInForeignDatabase::class => [],
 
             // Storage symlinks
@@ -185,7 +202,7 @@ class TenancyServiceProvider extends ServiceProvider
 
         // // To make Livewire v3 work with Tenancy, make the update route universal.
         // Livewire::setUpdateRoute(function ($handle) {
-        //     return RouteFacade::post('/livewire/update', $handle)->middleware(['web', 'universal', \Stancl\Tenancy\Tenancy::defaultMiddleware()]);
+        //     return Route::post('/livewire/update', $handle)->middleware(['web', 'universal', \Stancl\Tenancy\Tenancy::defaultMiddleware()]);
         // });
     }
 
@@ -206,7 +223,7 @@ class TenancyServiceProvider extends ServiceProvider
     {
         $this->app->booted(function () {
             if (file_exists(base_path('routes/tenant.php'))) {
-                RouteFacade::namespace(static::$controllerNamespace)
+                Route::namespace(static::$controllerNamespace)
                     ->middleware('tenant')
                     ->group(base_path('routes/tenant.php'));
             }
@@ -216,7 +233,9 @@ class TenancyServiceProvider extends ServiceProvider
     }
 
     /**
-     * Clone universal routes as tenant.
+     * Clone routes as tenant.
+     *
+     * This is used primarily for integrating packages.
      *
      * @see CloneRoutesAsTenant
      */
@@ -225,14 +244,7 @@ class TenancyServiceProvider extends ServiceProvider
         /** @var CloneRoutesAsTenant $cloneRoutes */
         $cloneRoutes = $this->app->make(CloneRoutesAsTenant::class);
 
-        // // You can provide a closure for cloning a specific route, e.g.:
-        // $cloneRoutes->cloneUsing('welcome', function () {
-        //     RouteFacade::get('/tenant-welcome', fn () => 'Current tenant: ' . tenant()->getTenantKey())
-        //         ->middleware(['universal', InitializeTenancyByPath::class])
-        //         ->name('tenant.welcome');
-        // });
-        // // To see the default behavior of cloning the universal routes, check out the cloneRoute() method in CloneRoutesAsTenant.
-
+        /** See CloneRoutesAsTenant for usage details. */
         $cloneRoutes->handle();
     }
 

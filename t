@@ -1,3 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-docker compose exec -e COLUMNS=$(tput cols) -T test vendor/bin/pest --color=always --no-coverage --filter "$@"
+if [[ "${CLAUDECODE}" != "1" ]]; then
+    COLOR_FLAG="--colors=always"
+else
+    COLOR_FLAG="--colors=never"
+fi
+
+docker compose exec -e COLUMNS=$(tput cols) -T test vendor/bin/pest ${COLOR_FLAG} --no-coverage --filter "$@"

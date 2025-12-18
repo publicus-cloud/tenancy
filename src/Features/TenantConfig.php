@@ -12,8 +12,10 @@ use Stancl\Tenancy\Contracts\Feature;
 use Stancl\Tenancy\Contracts\Tenant;
 use Stancl\Tenancy\Events\RevertedToCentralContext;
 use Stancl\Tenancy\Events\TenancyBootstrapped;
-use Stancl\Tenancy\Tenancy;
 
+// todo@release remove this class
+
+/** @deprecated Use the TenantConfigBootstrapper instead. */
 class TenantConfig implements Feature
 {
     public array $originalConfig = [];
@@ -27,7 +29,7 @@ class TenantConfig implements Feature
         protected Repository $config,
     ) {}
 
-    public function bootstrap(Tenancy $tenancy): void
+    public function bootstrap(): void
     {
         Event::listen(TenancyBootstrapped::class, function (TenancyBootstrapped $event) {
             /** @var Tenant $tenant */

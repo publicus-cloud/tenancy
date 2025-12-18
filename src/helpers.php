@@ -30,12 +30,18 @@ if (! function_exists('tenant')) {
             return app(Tenant::class);
         }
 
+        // @phpstan-ignore-next-line nullsafe.neverNull
         return app(Tenant::class)?->getAttribute($key);
     }
 }
 
 if (! function_exists('tenant_asset')) {
-    // todo@docblock
+    /**
+     * Generate a URL to an asset in tenant storage.
+     *
+     * If app.asset_url is set, this helper suffixes that URL before appending the asset path.
+     * If it is not set, the stancl.tenancy.asset route is used.
+     */
     function tenant_asset(string|null $asset): string
     {
         if ($assetUrl = config('app.asset_url')) {

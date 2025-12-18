@@ -22,6 +22,23 @@ class CreateUserWithRLSPolicies extends Command
 
     protected $description = "Creates RLS policies for all tables related to the tenant table. Also creates the RLS user if it doesn't exist yet";
 
+    /**
+     * Force, rather than just enable, the created RLS policies.
+     *
+     * By default, table owners bypass RLS policies. When this is enabled,
+     * they also need the BYPASSRLS permission. If your setup lets you create
+     * a user with BYPASSRLS, you may prefer leaving this on for additional
+     * safety. Otherwise, if you can't use BYPASSRLS, you can set this to false
+     * and depend on the behavior of table owners bypassing RLS automatically.
+     *
+     * This setting generally doesn't affect behavior at all with "default"
+     * setups, however if you have a more custom setup, with additional users
+     * involved (e.g. central connection user not being the same user that
+     * creates tables, or the created "RLS user" creating some tables) you
+     * should take care with how you configure this.
+     */
+    public static bool $forceRls = true;
+
     public function handle(PermissionControlledPostgreSQLSchemaManager $manager): int
     {
         $username = config('tenancy.rls.user.username');
@@ -49,14 +66,9 @@ class CreateUserWithRLSPolicies extends Command
         // Enable RLS scoping on the table (without this, queries won't be scoped using RLS)
         DB::statement("ALTER TABLE {$table} ENABLE ROW LEVEL SECURITY");
 
-        /**
-         * Force RLS scoping on the table, so that the table owner users
-         * don't bypass the scoping – table owners bypass RLS by default.
-         *
-         * E.g. when using a custom implementation where you create tables as the RLS user,
-         * the queries won't be scoped for the RLS user unless we force the RLS scoping using this query.
-         */
-        DB::statement("ALTER TABLE {$table} FORCE ROW LEVEL SECURITY");
+        if (static::$forceRls) {
+            DB::statement("ALTER TABLE {$table} FORCE ROW LEVEL SECURITY");
+        }
     }
 
     /**
@@ -69,12 +81,19 @@ class CreateUserWithRLSPolicies extends Command
         #[\SensitiveParameter]
         string $password,
     ): DatabaseConfig {
+        // This is a bit of a hack. We want to use our existing createUser() logic.
+        // That logic needs a DatabaseConfig instance. However, we aren't really working
+        // with any specific tenant here. We also *don't* want to use anything tenant-specific
+        // here. We are creating the SHARED "RLS user". Therefore, we need a custom DatabaseConfig
+        // instance for this purpose. The easiest way to do that is to grab an empty Tenant model
+        // (we use TenantWithDatabase in RLS) and manually create the host connection, just like
+        // DatabaseConfig::manager() would. We don't call that method since we want to use our existing
+        // PermissionControlledPostgreSQLSchemaManager $manager instance, rather than the "tenant's manager".
+
         /** @var TenantWithDatabase $tenantModel */
         $tenantModel = tenancy()->model();
 
-        // Use a temporary DatabaseConfig instance to set the host connection
         $temporaryDbConfig = $tenantModel->database();
-
         $temporaryDbConfig->purgeHostConnection();
 
         $tenantHostConnectionName = $temporaryDbConfig->getTenantHostConnectionName();

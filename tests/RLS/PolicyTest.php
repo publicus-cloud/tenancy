@@ -17,9 +17,11 @@ use Stancl\Tenancy\Commands\CreateUserWithRLSPolicies;
 use Stancl\Tenancy\RLS\PolicyManagers\TableRLSManager;
 use Stancl\Tenancy\RLS\PolicyManagers\TraitRLSManager;
 use Stancl\Tenancy\Bootstrappers\PostgresRLSBootstrapper;
+use Stancl\Tenancy\Tenancy;
 use function Stancl\Tenancy\Tests\pest;
 
 beforeEach(function () {
+    CreateUserWithRLSPolicies::$forceRls = true;
     TraitRLSManager::$excludedModels = [Article::class];
     TraitRLSManager::$modelDirectories = [__DIR__ . '/Etc'];
 
@@ -77,6 +79,10 @@ beforeEach(function () {
 
         $table->timestamps();
     });
+});
+
+afterEach(function () {
+    CreateUserWithRLSPolicies::$forceRls = true;
 });
 
 // Regression test for https://github.com/archtechx/tenancy/pull/1280
@@ -184,7 +190,25 @@ test('rls command recreates policies if the force option is passed', function (s
     TraitRLSManager::class,
 ]);
 
-test('queries will stop working when the tenant session variable is not set', function(string $manager) {
+test('dropRLSPolicies only drops RLS policies', function () {
+    DB::statement('CREATE POLICY "comments_dummy_rls_policy" ON comments USING (true)');
+    DB::statement('CREATE POLICY "comments_foo_policy" ON comments USING (true)'); // non-RLS policy
+
+    $policyCount = fn () => count(DB::select("SELECT policyname FROM pg_policies WHERE tablename = 'comments'"));
+
+    expect($policyCount())->toBe(2);
+
+    $removed = Tenancy::dropRLSPolicies('comments');
+
+    expect($removed)->toBe(1);
+
+    // Only the non-RLS policy remains
+    expect($policyCount())->toBe(1);
+});
+
+test('queries will stop working when the tenant session variable is not set', function(string $manager, bool $forceRls) {
+    CreateUserWithRLSPolicies::$forceRls = $forceRls;
+
     config(['tenancy.rls.manager' => $manager]);
 
     $sessionVariableName = config('tenancy.rls.session_variable_name');
@@ -216,7 +240,4 @@ test('queries will stop working when the tenant session variable is not set', fu
         INSERT INTO posts (text, tenant_id, author_id)
         VALUES ('post2', ?, ?)
     SQL, [$tenant->id, $authorId]))->toThrow(QueryException::class);
-})->with([
-    TableRLSManager::class,
-    TraitRLSManager::class,
-]);
+})->with([TableRLSManager::class, TraitRLSManager::class])->with([true, false]);

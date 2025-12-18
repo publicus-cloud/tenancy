@@ -10,6 +10,7 @@ use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Support\Facades\Event;
 use Stancl\Tenancy\Events\TenancyInitialized;
 use Illuminate\Support\Facades\Route as RouteFacade;
+use Illuminate\Support\Str;
 use Stancl\Tenancy\Actions\CloneRoutesAsTenant;
 use Stancl\Tenancy\Middleware\InitializeTenancyByPath;
 use Stancl\Tenancy\Middleware\InitializeTenancyByDomain;
@@ -120,7 +121,7 @@ test('early identification works with path identification', function (bool $useK
         RouteFacade::get('/{post}/comment/{comment}/edit', [$controller, 'computePost']);
     });
 
-    $tenant = Tenant::create(['tenancy_db_name' => pest()->randomString()]);
+    $tenant = Tenant::create(['tenancy_db_name' => Str::random(10)]);
 
     // Migrate users and comments tables on tenant connection
     pest()->artisan('tenants:migrate', [
@@ -344,9 +345,9 @@ test('the tenant parameter is only removed from tenant routes when using path id
             ->middleware('tenant')
             ->name('tenant-route');
 
-        RouteFacade::get($pathIdentification ? '/universal-route' : '/universal-route/{tenant?}', [ControllerWithMiddleware::class, 'routeHasTenantParameter'])
-            ->middleware('universal')
-            ->name('universal-route');
+        RouteFacade::get($pathIdentification ? '/cloned-route' : '/cloned-route/{tenant?}', [ControllerWithMiddleware::class, 'routeHasTenantParameter'])
+            ->middleware('clone')
+            ->name('cloned-route');
 
         /** @var CloneRoutesAsTenant */
         $cloneRoutesAction = app(CloneRoutesAsTenant::class);
@@ -364,8 +365,8 @@ test('the tenant parameter is only removed from tenant routes when using path id
             $response = pest()->get($tenantKey . '/tenant-route')->assertOk();
             expect((bool) $response->getContent())->toBeFalse();
 
-            // The tenant parameter gets removed from the cloned universal route
-            $response = pest()->get($tenantKey . '/universal-route')->assertOk();
+            // The tenant parameter gets removed from the cloned route
+            $response = pest()->get($tenantKey . '/cloned-route')->assertOk();
             expect((bool) $response->getContent())->toBeFalse();
         } else {
             // Tenant parameter is not removed from tenant routes using other kernel identification MW
@@ -374,12 +375,12 @@ test('the tenant parameter is only removed from tenant routes when using path id
             $response = pest()->get("http://{$domain}/{$tenantKey}/tenant-route")->assertOk();
             expect((bool) $response->getContent())->toBeTrue();
 
-            // The tenant parameter does not get removed from the universal route when accessing it through the central domain
-            $response = pest()->get("http://localhost/universal-route/$tenantKey")->assertOk();
+            // The tenant parameter does not get removed from the cloned route when accessing it through the central domain
+            $response = pest()->get("http://localhost/cloned-route/$tenantKey")->assertOk();
             expect((bool) $response->getContent())->toBeTrue();
 
-            // The tenant parameter gets removed from the universal route when accessing it through the tenant domain
-            $response = pest()->get("http://{$domain}/universal-route")->assertOk();
+            // The tenant parameter gets removed from the cloned route when accessing it through the tenant domain
+            $response = pest()->get("http://{$domain}/cloned-route")->assertOk();
             expect((bool) $response->getContent())->toBeFalse();
         }
     } else {

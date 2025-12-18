@@ -21,7 +21,6 @@ $rules = [
     'blank_line_before_statement' => [
         'statements' => ['return']
     ],
-    'braces' => true,
     'cast_spaces' => true,
     'class_definition' => true,
     'concat_space' => [
@@ -132,6 +131,7 @@ $finder = Finder::create()
     ->in([
         $project_path . '/src',
     ])
+    ->exclude('Enums')
     ->name('*.php')
     ->notName('*.blade.php')
     ->ignoreDotFiles(true)

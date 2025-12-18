@@ -14,10 +14,9 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Route as RouteFacade;
 use Stancl\Tenancy\Enums\RouteMode;
 
-// todo@refactor move this logic to some dedicated static class?
-
 /**
  * @mixin \Stancl\Tenancy\Tenancy
+ * @internal The public methods in this trait should not be understood to be a public stable API.
  */
 trait DealsWithRouteContexts
 {
@@ -110,7 +109,7 @@ trait DealsWithRouteContexts
 
             foreach ($middleware as $inner) {
                 if (! $inner instanceof Closure && isset($middlewareGroups[$inner])) {
-                    $innerMiddleware = Arr::wrap($middlewareGroups[$inner]);
+                    $innerMiddleware = array_merge($innerMiddleware, Arr::wrap($middlewareGroups[$inner]));
                 }
             }
 
